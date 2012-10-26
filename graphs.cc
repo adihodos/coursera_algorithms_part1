@@ -255,13 +255,13 @@ public :
 
 protected :
     graph&                  graph_;
-    std::vector<node_color> color_table_;
+    std::vector<node_color> colors_;
     distance_table_t        distances_;
     predecessor_table_t     predecessors_;
     
     void initialize() {
         const size_t vertex_count = graph_.get_vertex_count() + 1;
-        color_table_.assign(vertex_count, node_color::white);
+        colors_.assign(vertex_count, node_color::white);
         distances_.assign(vertex_count, -1);
         predecessors_.assign(vertex_count, -1);
     }
@@ -341,27 +341,62 @@ void bfs_search::execute(int32_t start_vertex, bool reverse) {
     }
 }
 
+struct null_edge_discovery_fn {
+    void operator()(int32_t, int32_t) {}
+};
+
+struct null_vertex_finish_fn {
+    void operator()(int32_t) {}
+};
+
+template<typename edge_discovery_fn = null_edge_discovery_fn,
+         typename vertex_finish_fn = null_vertex_finish_fn>
 class dfs_search : private graph_search_base {
+private :
+    /*!
+     * \brief Called when examining an edge.
+     */
+    edge_discovery_fn   edge_process_fn_;
+    /*!
+     * \brief Called when a vertex is fully explored.
+     */
+    vertex_finish_fn    vertex_finish_fn_;
 public :
     using graph_search_base::distance_table_t;
     using graph_search_base::predecessor_table_t;
     using graph_search_base::get_distance_table;
     using graph_search_base::get_predecessors_table;
+    using graph_search_base::initialize;
 
     dfs_search(graph& g) : graph_search_base(g) {}
+
+    dfs_search(
+        graph& g, 
+        const edge_discovery_fn& edge_fn,
+        const vertex_finish_fn& vertex_fn
+        )
+        :   graph_search_base(g),
+            edge_process_fn_(edge_fn),
+            vertex_finish_fn_(vertex_fn) {}
 
     void execute(int32_t start_vertex, bool reversed = false);
 };
 
-void dfs_search::execute(int32_t start_vertex, bool reversed) {
-    graph_search_base::initialize();
+template<typename edge_fn, typename vertex_fn>
+void dfs_search<edge_fn, vertex_fn>::execute(
+    int32_t start_vertex, 
+    bool reversed
+    ) {
 
-    struct stack_frame_t {
-        const graph_vertex*                     vertex;
-        graph_vertex::arc_list_const_iterator   adj_itr;
-        graph_vertex::arc_list_const_iterator   adj_end;
+    struct dfs_frame_t {
+        const graph_vertex*                     vert;
+        graph_vertex::arc_list_const_iterator   itr_adj;
+        graph_vertex::arc_list_const_iterator   itr_adj_end;
     };
     
+    //
+    // Pointer to functions that return iterators, suitable for
+    // traversing the graph in forward/reversed direction.
     typedef graph_vertex::arc_list_const_iterator 
         (graph_vertex::*const_itr_fn)() const;
 
@@ -369,58 +404,59 @@ void dfs_search::execute(int32_t start_vertex, bool reversed) {
         &graph_vertex::cbegin, &graph_vertex::cend,
         &graph_vertex::crbegin, &graph_vertex::crend,
     };
+    
+    std::stack<dfs_frame_t> dfs_stack;
+    dfs_frame_t start_vertex_frame;
+    start_vertex_frame.vert = &graph_.get_vertex(start_vertex);
+    start_vertex_frame.itr_adj = 
+        (start_vertex_frame.vert->*itr_fn[reversed * 2])();
+    start_vertex_frame.itr_adj_end =
+        (start_vertex_frame.vert->*itr_fn[reversed * 2 + 1])();
+    dfs_stack.push(start_vertex_frame);
 
-    std::stack<stack_frame_t> stk;
-    stack_frame_t sf;
-    sf.vertex = &graph_.get_vertex(start_vertex);
-    sf.adj_itr = (sf.vertex->*itr_fn[reversed * 2])();
-    sf.adj_end = (sf.vertex->*itr_fn[reversed * 2 + 1])();
-    stk.push(sf);
-
-    color_table_[start_vertex] = node_color::gray;
+    colors_[start_vertex] = node_color::gray;
     distances_[start_vertex] = 0;
 
-    while (!stk.empty()) {
-        auto& current_frame = stk.top();
-        const int32_t src_vert = current_frame.vertex->id;
-
-        printf("\nVertex %d", src_vert);
-        
+    while (!dfs_stack.empty()) {
+        auto& current_frame = dfs_stack.top();
+        const int32_t src_vert = current_frame.vert->id;
         bool explore_further = false;
-        while (current_frame.adj_itr != current_frame.adj_end) {
-            printf("\n(%d ~> %d)", src_vert, current_frame.adj_itr->destination);
 
-            if (color_table_[current_frame.adj_itr->destination] 
-                == node_color::white) {
-                const int32_t dst_vert = current_frame.adj_itr->destination;
-                color_table_[dst_vert] = node_color::gray;
+        while (current_frame.itr_adj != current_frame.itr_adj_end) {
+            const int32_t dst_vert = current_frame.itr_adj->destination;
+
+            edge_process_fn_(src_vert, dst_vert);
+            if (colors_[dst_vert] == node_color::white) {
+                colors_[dst_vert] = node_color::gray;
                 distances_[dst_vert] = distances_[src_vert] + 1;
                 predecessors_[dst_vert] = src_vert;
 
-                stack_frame_t fv;
-                fv.vertex = &graph_.get_vertex(dst_vert);
-                fv.adj_itr = (fv.vertex->*itr_fn[reversed * 2])();
-                fv.adj_end = (fv.vertex->*itr_fn[reversed * 2 + 1])();
 
+                dfs_frame_t dst_frame;
+                dst_frame.vert = &graph_.get_vertex(dst_vert);
+                dst_frame.itr_adj = (dst_frame.vert->*itr_fn[reversed * 2])();
+                dst_frame.itr_adj_end = 
+                    (dst_frame.vert->*itr_fn[reversed * 2 + 1])();
 
-                ++current_frame.adj_itr;
+                dfs_stack.push(dst_frame);
+                ++current_frame.itr_adj;
 
-                stk.push(fv);
                 explore_further = true;
                 break;
             }
 
-            ++current_frame.adj_itr;
+            ++current_frame.itr_adj;
         }
 
         if (explore_further)
             continue;
 
-        color_table_[src_vert] = node_color::black;
-        stk.pop();
+        colors_[src_vert] = node_color::black;
+        vertex_finish_fn_(src_vert);
+        dfs_stack.pop();
     }
 }
-
+/*
 class topological_sort : private graph_search_base {
 public :
     typedef std::vector<int32_t>    time_table_t;
@@ -456,15 +492,45 @@ void topological_sort::execute(bool reversed) {
         graph_vertex::arc_list_const_iterator   itr_adj_end;
     };
 }
+*/
+
+struct my_edge_fn {
+    void operator()(int32_t src, int32_t dst) {
+        printf("\n(%d ~> %d)", src, dst);
+    }
+};
+
+struct my_vertex_done_fn {
+    void operator()(int32_t src) {
+        printf("\n(%d) explored.", src);
+    }
+};
+
+struct topo_sort_state {
+    std::list<int32_t>  ordering;
+};
+
+struct vertex_done_topo_sort {
+    topo_sort_state*    sstate;
+
+    vertex_done_topo_sort(topo_sort_state* state) : sstate(state) {}
+
+    void operator()(int32_t vertex) {
+        sstate->ordering.push_front(vertex);
+    }
+};
 
 void test_dfs() {
     graph g(true);
     if (!g.read_from_file("/home/adihodos/temp/graph.dat"))
         return;
 
-    dfs_search dfs(g);
+    dfs_search<my_edge_fn, my_vertex_done_fn> dfs(g);
+    dfs.initialize();
     printf("\nExecuting dfs, start vertex = 1, direction forward");
     dfs.execute(1);
+
+    dfs.initialize();
     printf("\nExecuting dfs, start vertex = 1, direction reversed");
     dfs.execute(1, true);
 }
@@ -482,7 +548,7 @@ void test_bfs() {
 }
 
 int main(int, char**) {
-    test_bfs();
+    //test_bfs();
     test_dfs();
     return 0;
 }
