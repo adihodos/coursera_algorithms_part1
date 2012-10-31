@@ -510,6 +510,42 @@ struct topo_sort_state {
     std::list<int32_t>  ordering;
 };
 
+class topological_sort : private graph_search_base {
+public :
+    typedef std::vector<int32_t>    time_table_t;
+
+private :
+    time_table_t    entry_time_;
+    time_table_t    exit_time_;
+    int32_t         global_tm_;
+
+    void initialize() {
+        graph_search_base::initialize();
+        const auto vertex_cnt = graph_.get_vertex_count() + 1;
+        entry_time_.resize(vertex_cnt, -1);
+        exit_time_.resize(vertex_cnt, -1);
+        global_tm_ = 0;
+    }
+
+public :
+    using graph_search_base::distance_table_t;
+    using graph_search_base::predecessor_table_t;
+    using graph_search_base::get_distance_table;
+    using graph_search_base::get_predecessors_table;
+
+    topological_sort(graph& g) : graph_search_base(g), global_tm_(0) {}
+
+    void execute();
+
+    const time_table_t& get_entry_time_table() const {
+        return entry_time_;
+    }
+
+    const time_table_t& get_exit_time_table() const {
+        return exit_time_;
+    }
+};
+
 struct vertex_done_topo_sort {
     topo_sort_state*    sstate;
 
