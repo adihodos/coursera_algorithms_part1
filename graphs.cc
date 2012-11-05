@@ -182,6 +182,7 @@ bool graph::read_from_file(const char *file_name) {
 
             if (!source_vertex) {
                 source_vertex = new_vertex;
+                add_vertex(source_vertex, -1);
             } else {
                 //
                 // add vertex
@@ -194,6 +195,12 @@ bool graph::read_from_file(const char *file_name) {
 }
 
 void graph::add_vertex(int32_t source, int32_t dest) {
+    if (dest == -1) {
+        graph_vertex& gvert = vertices_[source];
+        gvert.id = source;
+        return;
+    }
+
     add_arc(source, dest, arc_direction::outgoing);
     add_arc(dest, source, arc_direction::incoming);
 
@@ -269,6 +276,18 @@ protected :
     graph_search_base(graph& g) : graph_(g) {}
 
     ~graph_search_base() {}
+
+    int32_t get_distance(int32_t vertex_id) const {
+        return distances_[vertex_id];
+    }
+
+    int32_t get_predecessor(int32_t vertex_id) const {
+        return predecessors_[vertex_id];
+    }
+
+    node_color get_color(int32_t vertex_id) const {
+        return colors_[vertex_id];
+    }
 };
 
 class bfs_search {
@@ -345,49 +364,87 @@ struct null_edge_discovery_fn {
     void operator()(int32_t, int32_t) {}
 };
 
-struct null_vertex_finish_fn {
+struct null_vertex_fn {
     void operator()(int32_t) {}
 };
 
-template<typename edge_discovery_fn = null_edge_discovery_fn,
-         typename vertex_finish_fn = null_vertex_finish_fn>
+//! Implements DFS search in a graph.
 class dfs_search : private graph_search_base {
-private :
-    /*!
-     * \brief Called when examining an edge.
-     */
-    edge_discovery_fn   edge_process_fn_;
-    /*!
-     * \brief Called when a vertex is fully explored.
-     */
-    vertex_finish_fn    vertex_finish_fn_;
 public :
+    //! \name Types
+    //! @{
+
     using graph_search_base::distance_table_t;
+
     using graph_search_base::predecessor_table_t;
-    using graph_search_base::get_distance_table;
-    using graph_search_base::get_predecessors_table;
-    using graph_search_base::initialize;
+
+    //! @}
+
+public :
+    //! \name Constructors
+    //! @{
 
     dfs_search(graph& g) : graph_search_base(g) {}
 
-    dfs_search(
-        graph& g, 
-        const edge_discovery_fn& edge_fn,
-        const vertex_finish_fn& vertex_fn
-        )
-        :   graph_search_base(g),
-            edge_process_fn_(edge_fn),
-            vertex_finish_fn_(vertex_fn) {}
+    //! @}
+    
+public :
+    //! \name Operations
+    //! @{
 
-    void execute(int32_t start_vertex, bool reversed = false);
+    //! \brief DFS search
+    //! \param start_vertex Vertex where the search is initiated.
+    //! \param reversed If true, search is executed on the transposed graph.
+    //! \param edge_discovery_fn Functor called when examining an edge.
+    //! \param vertex_discover_fn Functor called when a vertex is explored for the
+    //!  first time.
+    //! \param vertex_end_fn Functor called when all nodes in a vertex's adjacency
+    //! list have been explored.
+    template<
+        typename edge_discovery_fn,
+        typename vertex_discover_fn,
+        typename vertex_end_fn
+    >
+    void execute(
+        int32_t start_vertex, 
+        bool reversed = false,
+        edge_discovery_fn edge_fn = null_edge_discovery_fn(),
+        vertex_discover_fn vx_discover_fn = null_vertex_fn(),
+        vertex_end_fn vx_end_fn = null_vertex_fn()
+        );
+
+    using graph_search_base::initialize;
+
+    //! @}
+
+public :
+    //! \name Attributes
+    //! @{
+    
+    using graph_search_base::get_distance;
+
+    using graph_search_base::get_predecessor;
+
+    using graph_search_base::get_color;
+
+    //! @}
 };
 
-template<typename edge_fn, typename vertex_fn>
-void dfs_search<edge_fn, vertex_fn>::execute(
+template<
+    typename edge_fn, 
+    typename vertex_discover_fn, 
+    typename vertex_end_fn
+> 
+void dfs_search::execute(
     int32_t start_vertex, 
-    bool reversed
+    bool reversed,
+    edge_fn edge_explore_fn,
+    vertex_discover_fn vx_explore_fn,
+    vertex_end_fn vx_end_fn
     ) {
 
+    //
+    // Saves search state for a given vertex.
     struct dfs_frame_t {
         const graph_vertex*                     vert;
         graph_vertex::arc_list_const_iterator   itr_adj;
@@ -405,6 +462,8 @@ void dfs_search<edge_fn, vertex_fn>::execute(
         &graph_vertex::crbegin, &graph_vertex::crend,
     };
     
+    //
+    // Initialize search data.
     std::stack<dfs_frame_t> dfs_stack;
     dfs_frame_t start_vertex_frame;
     start_vertex_frame.vert = &graph_.get_vertex(start_vertex);
@@ -425,13 +484,23 @@ void dfs_search<edge_fn, vertex_fn>::execute(
         while (current_frame.itr_adj != current_frame.itr_adj_end) {
             const int32_t dst_vert = current_frame.itr_adj->destination;
 
-            edge_process_fn_(src_vert, dst_vert);
+            //
+            // Explore edge(src_vert, dst_vert)
+            edge_explore_fn(src_vert, dst_vert);
+
             if (colors_[dst_vert] == node_color::white) {
+                //
+                // New node discovered
                 colors_[dst_vert] = node_color::gray;
                 distances_[dst_vert] = distances_[src_vert] + 1;
                 predecessors_[dst_vert] = src_vert;
 
+                //
+                // Explore node (dst_vert)
+                vx_explore_fn(src_vert, dst_vert);
 
+                //
+                // Save state, since we need to explore deeper.
                 dfs_frame_t dst_frame;
                 dst_frame.vert = &graph_.get_vertex(dst_vert);
                 dst_frame.itr_adj = (dst_frame.vert->*itr_fn[reversed * 2])();
@@ -448,51 +517,21 @@ void dfs_search<edge_fn, vertex_fn>::execute(
             ++current_frame.itr_adj;
         }
 
+        //
+        // Start exploring from the last discovered vertex.
         if (explore_further)
             continue;
 
+        //
+        // All nodes from src_vert's adjacency list have been explored,
+        // we mark src_vert as fully explored.
         colors_[src_vert] = node_color::black;
-        vertex_finish_fn_(src_vert);
+        //
+        // Call finish function.
+        vx_end_fn(src_vert);
         dfs_stack.pop();
     }
 }
-/*
-class topological_sort : private graph_search_base {
-public :
-    typedef std::vector<int32_t>    time_table_t;
-
-private :
-    time_table_t    entry_times_;
-    time_table_t    exit_times_;
-
-    void initialize() {
-        graph_search_base::initialize();
-        const auto vertex_cnt = graph_.get_vertex_count();
-        entry_times_.assign(vertex_cnt, -1);
-        exit_times_.assign(vertex_cnt, -1);
-    }
-
-public :
-    using graph_search_base::distance_table_t;
-    using graph_search_base::predecessor_table_t;
-    using graph_search_base::get_distance_table;
-    using graph_search_base::get_predecessors_table;
-
-    topological_sort(graph& g) : graph_search_base(g) {}
-
-    void execute(bool reversed = false);
-};
-
-void topological_sort::execute(bool reversed) {
-    initialize();
-
-    struct stack_frame_t {
-        graph::vertex_const_iterator            itr_vertex;
-        graph_vertex::arc_list_const_iterator   itr_adj_vertex;
-        graph_vertex::arc_list_const_iterator   itr_adj_end;
-    };
-}
-*/
 
 struct my_edge_fn {
     void operator()(int32_t src, int32_t dst) {
@@ -506,85 +545,87 @@ struct my_vertex_done_fn {
     }
 };
 
-struct topo_sort_state {
-    std::list<int32_t>  ordering;
+struct topo_sort {
+    std::vector<int32_t>    entry_times_;
+    std::vector<int32_t>    exit_times_;
+    std::list<int32_t>      sorted_vertices_;
+    int32_t                 glob_time_;
+
+    struct topo_vertex_discovery_fn {
+        topo_vertex_discovery_fn(topo_sort* sstate)
+            : sort_state_data(sstate) {}
+
+        void operator()(int32_t /* src_vert */, int32_t dst_vert) const {
+            sort_state_data->entry_times_[dst_vert] = 
+                ++sort_state_data->glob_time_;
+        }
+
+        topo_sort* sort_state_data;
+    };
+
+    struct topo_vertex_end_fn {
+        topo_vertex_end_fn(topo_sort* sstate)
+            : sort_state_data(sstate) {}
+
+        void operator()(int32_t vertex_id) const {
+            sort_state_data->exit_times_[vertex_id] =
+                ++sort_state_data->glob_time_;
+            sort_state_data->sorted_vertices_.push_front(vertex_id);
+        }
+
+        topo_sort* sort_state_data;
+    };
+
+    topo_sort() : glob_time_(0) {}
+
+    void initialize(graph& gr) {
+        const auto num_vertices = gr.get_vertex_count();
+        entry_times_.resize(num_vertices, -1);
+        exit_times_.resize(num_vertices, -1);
+        sorted_vertices_.clear();
+        glob_time_ = 0;
+    }
+
+    void execute(graph& g) {
+        dfs_search srch(g);
+
+        srch.initialize();
+        initialize(g);
+
+        const int32_t num_vertices = (int32_t) g.get_vertex_count();
+        for (int32_t i = 1; i <= num_vertices; ++i) {
+            if (srch.get_color(i) == node_color::white) {
+                entry_times_[i] = ++glob_time_;
+                srch.execute(i, false, null_edge_discovery_fn(),
+                             topo_vertex_discovery_fn(this),
+                             topo_vertex_end_fn(this));
+            }
+        }
+    }
 };
 
-class topological_sort : private graph_search_base {
-public :
-    typedef std::vector<int32_t>    time_table_t;
+void test_topo_sort() {
+    const char* const kDataFilePath = "/home/adi.hodos/temp/activities.dat";
 
-private :
-    time_table_t    entry_time_;
-    time_table_t    exit_time_;
-    int32_t         global_tm_;
-
-    void initialize() {
-        graph_search_base::initialize();
-        const auto vertex_cnt = graph_.get_vertex_count() + 1;
-        entry_time_.resize(vertex_cnt, -1);
-        exit_time_.resize(vertex_cnt, -1);
-        global_tm_ = 0;
-    }
-
-public :
-    using graph_search_base::distance_table_t;
-    using graph_search_base::predecessor_table_t;
-    using graph_search_base::get_distance_table;
-    using graph_search_base::get_predecessors_table;
-
-    topological_sort(graph& g) : graph_search_base(g), global_tm_(0) {}
-
-    void execute();
-
-    const time_table_t& get_entry_time_table() const {
-        return entry_time_;
-    }
-
-    const time_table_t& get_exit_time_table() const {
-        return exit_time_;
-    }
-};
-
-struct vertex_done_topo_sort {
-    topo_sort_state*    sstate;
-
-    vertex_done_topo_sort(topo_sort_state* state) : sstate(state) {}
-
-    void operator()(int32_t vertex) {
-        sstate->ordering.push_front(vertex);
-    }
-};
-
-void test_dfs() {
     graph g(true);
-    if (!g.read_from_file("/home/adihodos/temp/graph.dat"))
+    if (!g.read_from_file(kDataFilePath)) {
+        LAST_ERRNO(fopen);
         return;
+    }
 
-    dfs_search<my_edge_fn, my_vertex_done_fn> dfs(g);
-    dfs.initialize();
-    printf("\nExecuting dfs, start vertex = 1, direction forward");
-    dfs.execute(1);
+    topo_sort ts;
+    ts.execute(g);
 
-    dfs.initialize();
-    printf("\nExecuting dfs, start vertex = 1, direction reversed");
-    dfs.execute(1, true);
-}
-
-void test_bfs() {
-    graph g(true);
-    if (!g.read_from_file("/home/adihodos/temp/graph.dat"))
-        return;
-
-    bfs_search bfs(g);
-    printf("\nExecuting bfs, start vertex = 1, direction forward");
-    bfs.execute(1);
-    printf("\nExecuting bfs, start vertex = 1, direction reversed");
-    bfs.execute(1, true);
+    printf("\n##### Topological sort : #####");
+    std::for_each(ts.sorted_vertices_.begin(), ts.sorted_vertices_.end(),
+                  [&ts](int32_t vertex_id) {
+        printf("[(%d), (%d, %d)] -> ", vertex_id, ts.entry_times_[vertex_id],
+               ts.exit_times_[vertex_id]);
+    });
 }
 
 int main(int, char**) {
-    //test_bfs();
-    test_dfs();
+    //test_dfs();
+    test_topo_sort();
     return 0;
 }
