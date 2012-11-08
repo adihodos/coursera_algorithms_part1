@@ -98,6 +98,10 @@ public :
 
     graph(bool directed = false);
 
+    bool is_directed() const {
+        return directed_;
+    }
+
     bool read_from_file(const char* file_name);
 
     size_t inner_degree(int32_t vertex) noexcept {
@@ -361,11 +365,11 @@ void bfs_search::execute(int32_t start_vertex, bool reverse) {
 }
 
 struct null_edge_discovery_fn {
-    void operator()(int32_t, int32_t) {}
+    void operator()(int32_t, int32_t) const {}
 };
 
 struct null_vertex_fn {
-    void operator()(int32_t) {}
+    void operator()(int32_t) const {}
 };
 
 //! Implements DFS search in a graph.
@@ -392,7 +396,7 @@ public :
     //! \name Operations
     //! @{
 
-    //! \brief DFS search
+    //! \brief Executes a DFS in the graph.
     //! \param start_vertex Vertex where the search is initiated.
     //! \param reversed If true, search is executed on the transposed graph.
     //! \param edge_discovery_fn Functor called when examining an edge.
@@ -624,8 +628,121 @@ void test_topo_sort() {
     });
 }
 
+class scc_unidirected_graph {
+public :
+    //! Provides info about vertices in an SCC.
+    struct scc_vertex {
+        scc_vertex() 
+            : scc_id(-1), vertex_id(-1) {}
+
+        scc_vertex(
+            int32_t scc, 
+            int32_t vertex
+            )
+            :   scc_id(scc), 
+                vertex_id(vertex) {}
+
+        int32_t scc_id; //! SCC that the vertex belongs to
+        int32_t vertex_id; //! Vertex id
+    };
+
+
+    scc_unidirected_graph() {}
+
+    int32_t compute_sccs(
+        graph& input_graph
+        );
+
+    const std::vector<scc_vertex>& get_scc_info() const {
+        return sccs_;
+    }
+
+private :
+    std::vector<scc_vertex>     sccs_;
+};
+
+int32_t scc_unidirected_graph::compute_sccs(
+    graph& input_graph
+    ) {
+    assert(input_graph.is_directed());
+    const auto num_verts = input_graph.get_vertex_count();
+
+    struct dfs_data {
+
+        struct postvisit_fn {
+            postvisit_fn(dfs_data* state_p) : state_ptr(state_p) {}
+
+            void operator()(int32_t vertex_id) const {
+                state_ptr->vertex_list.push_back(vertex_id);
+            }
+
+            dfs_data*   state_ptr;
+        };
+
+        dfs_data(size_t num_verts) {
+            vertex_list.reserve(num_verts);
+        }
+        
+        std::vector<int32_t>      vertex_list;
+    };
+
+    dfs_search dfs(input_graph);
+    dfs_data search_data(num_verts);
+
+    auto null_pre_fn = [](int32_t, int32_t) {};
+
+    dfs.initialize();
+    for (size_t i = 1; i < num_verts; ++i) {
+        if (dfs.get_color((int32_t) i) == node_color::white) {
+            dfs.execute((int32_t) i, true, null_edge_discovery_fn(),
+                        null_pre_fn, dfs_data::postvisit_fn(&search_data));
+        }
+    }
+
+    int32_t scc_num = 0;
+    auto itr_vert = search_data.vertex_list.rbegin();
+    auto itr_end = search_data.vertex_list.rend();
+    dfs.initialize();
+    sccs_.reserve(num_verts);
+
+    while (itr_vert != itr_end) {
+        if (dfs.get_color(*itr_vert) == node_color::white) {
+            ++scc_num;
+            dfs.execute(*itr_vert, false, null_edge_discovery_fn(),
+                        null_pre_fn, [this, scc_num](int32_t vertex_id) {
+                sccs_.push_back({ scc_num, vertex_id });
+            });
+        }
+        ++itr_vert;
+    }
+
+    return scc_num;
+}
+
+void test_scc() {
+    graph g(true);
+
+    const char* const kGraphDataFilePath = "/home/adi/temp/gd2.dat";
+    if (!g.read_from_file(kGraphDataFilePath)) {
+        LAST_ERRNO(fopen);
+        return;
+    }
+
+    scc_unidirected_graph scc;
+    int num_sccs = scc.compute_sccs(g);
+
+    fprintf(stdout, "\nSCCS : %d", num_sccs);
+    const auto& scc_lst = scc.get_scc_info();
+    std::for_each(std::begin(scc_lst), std::end(scc_lst), 
+                  [](const scc_unidirected_graph::scc_vertex& scc_component) {
+        fprintf(stdout, "\n [%d - %d]", scc_component.scc_id, 
+                scc_component.vertex_id);
+    });
+}
+
 int main(int, char**) {
     //test_dfs();
-    test_topo_sort();
+    //test_topo_sort();
+    test_scc();
     return 0;
 }
