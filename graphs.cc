@@ -633,17 +633,16 @@ public :
     //! Provides info about vertices in an SCC.
     struct scc_vertex {
         scc_vertex() 
-            : scc_id(-1), vertex_id(-1) {}
+            : scc_id(-1), vertex_count(0) {}
 
         scc_vertex(
-            int32_t scc, 
-            int32_t vertex
+            int32_t scc 
             )
             :   scc_id(scc), 
-                vertex_id(vertex) {}
+                vertex_count(0) {}
 
-        int32_t scc_id; //! SCC that the vertex belongs to
-        int32_t vertex_id; //! Vertex id
+        int32_t scc_id; //!< SCC that the vertex belongs to
+        int32_t vertex_count; //!< Count of vertices in this scc.
     };
 
 
@@ -655,6 +654,11 @@ public :
 
     const std::vector<scc_vertex>& get_scc_info() const {
         return sccs_;
+    }
+
+    template<typename sort_predicate>
+    void sort_sccs(sort_predicate pred__) {
+        std::sort(std::begin(sccs_), std::end(sccs_), pred__);
     }
 
 private :
@@ -707,12 +711,19 @@ int32_t scc_unidirected_graph::compute_sccs(
 
     while (itr_vert != itr_end) {
         if (dfs.get_color(*itr_vert) == node_color::white) {
+
             ++scc_num;
+
+            sccs_.push_back({ scc_num });
+
             dfs.execute(*itr_vert, false, null_edge_discovery_fn(),
-                        null_pre_fn, [this, scc_num](int32_t vertex_id) {
-                sccs_.push_back({ scc_num, vertex_id });
+                        null_pre_fn, [this, scc_num](int32_t) {
+
+                ++sccs_.back().vertex_count;
+
             });
         }
+
         ++itr_vert;
     }
 
@@ -722,22 +733,50 @@ int32_t scc_unidirected_graph::compute_sccs(
 void test_scc() {
     graph g(true);
 
-    const char* const kGraphDataFilePath = "/home/adi/temp/gd2.dat";
+    const char* const kGraphDataFilePath = "/home/adi/temp/SCC.txt";
+    fputs("\nReading graph", stdout);
+
     if (!g.read_from_file(kGraphDataFilePath)) {
         LAST_ERRNO(fopen);
         return;
     }
 
+    fputs("\nDone reading graph", stdout);
+
+    fputs("\nComputing SCCS", stdout);
+
     scc_unidirected_graph scc;
     int num_sccs = scc.compute_sccs(g);
 
+    fputs("\nDone computing SCCS", stdout);
+
+
+    fputs("\nSorting SCCSS", stdout);
+    //
+    // Sort strongly connected components by the number of vertices.
+    scc.sort_sccs([](const scc_unidirected_graph::scc_vertex& lhs,
+                     const scc_unidirected_graph::scc_vertex& rhs) {
+        return lhs.vertex_count > rhs.vertex_count;
+    });
+
+    fputs("\nDone sorting SCCS", stdout);
+
     fprintf(stdout, "\nSCCS : %d", num_sccs);
     const auto& scc_lst = scc.get_scc_info();
+
+    using namespace std;
+    for_each(begin(scc_lst), begin(scc_lst) + 5, 
+             [](const scc_unidirected_graph::scc_vertex& scc) {
+             fprintf(stdout, "\n SCC %d, vertices %d",
+                     scc.scc_id, scc.vertex_count);
+    });
+    /*
     std::for_each(std::begin(scc_lst), std::end(scc_lst), 
                   [](const scc_unidirected_graph::scc_vertex& scc_component) {
         fprintf(stdout, "\n [%d - %d]", scc_component.scc_id, 
                 scc_component.vertex_id);
     });
+    */
 }
 
 int main(int, char**) {
